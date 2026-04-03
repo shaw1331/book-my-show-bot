@@ -4,6 +4,7 @@ import logging
 import time
 from datetime import datetime
 
+from bot.preference_store import PreferenceStore
 from config.schema import AppConfig
 from models.movie import AvailabilityResult, AvailabilityStatus, Showtime, haversine_km
 from notifier.base import BaseNotifier
@@ -24,21 +25,42 @@ class AvailabilityChecker:
         config: AppConfig,
         scraper: BaseScraper,
         notifiers: list[BaseNotifier],
+        prefs: PreferenceStore | None = None,
     ):
         self.config = config
         self.scraper = scraper
         self.notifiers = notifiers
+        self.prefs = prefs
         self.state = NotificationState()
         self.health = ScraperHealthMonitor()
         self._current_interval = config.checker.interval_seconds
         self._check_count = 0
         self._degraded_notified = False
 
+    def _pref(self, key: str, fallback: str | list) -> str | list:
+        """Read from preference store if available, else fallback to config."""
+        if self.prefs:
+            val = self.prefs.get(key) if isinstance(fallback, str) else self.prefs.get_list(key)
+            if val:
+                return val
+        return fallback
+
+    def _movie_name(self) -> str:
+        return self._pref("movie_name", self.config.movie.name)
+
+    def _movie_code(self) -> str:
+        return self._pref("movie_code", self.config.movie.code)
+
+    def _set_movie_code(self, code: str) -> None:
+        if self.prefs:
+            self.prefs.set("movie_code", code)
+        self.config.movie.code = code
+
     def run(self) -> None:
         """Main polling loop. Runs until KeyboardInterrupt."""
         logger.info(
             "Starting availability checker for '%s' in %s (checking every %ds)",
-            self.config.movie.name,
+            self._movie_name(),
             self.config.location.city,
             self.config.checker.interval_seconds,
         )
@@ -61,39 +83,116 @@ class AvailabilityChecker:
         """Run a single check cycle. Returns the result or None on error."""
         return self._check_once()
 
+    def fetch_raw_shows(self) -> list[Showtime]:
+        """Fetch ALL available showtimes with NO filters applied.
+
+        Used by the /lookup command to show what BMS has for a cinema.
+        """
+        movie_name = self._movie_name()
+        movie_code = self._movie_code()
+
+        if not movie_code and movie_name:
+            if isinstance(self.scraper, HttpScraper):
+                results = self.scraper.search_movie(
+                    movie_name, self.config.location.city
+                )
+                if results:
+                    movie_code = results[0]["code"]
+                    self._set_movie_code(movie_code)
+
+        if not movie_code:
+            return []
+
+        try:
+            target_dates = self._resolve_target_dates()
+            result = self.scraper.fetch_availability(
+                movie_code=movie_code,
+                city=self.config.location.city,
+                region_code=self.config.location.region_code,
+                target_dates=target_dates,
+            )
+            return [
+                s for s in result.showtimes
+                if s.status in (AvailabilityStatus.AVAILABLE, AvailabilityStatus.FILLING_FAST)
+            ]
+        except ScraperError as e:
+            logger.warning("fetch_raw_shows failed: %s", e)
+            return []
+
+    def list_shows(self) -> list[Showtime]:
+        """Fetch all matching available shows (no dedup, no notifications).
+
+        Returns filtered + sorted showtimes for display purposes.
+        """
+        movie_name = self._movie_name()
+        movie_code = self._movie_code()
+
+        if not movie_code and movie_name:
+            if isinstance(self.scraper, HttpScraper):
+                results = self.scraper.search_movie(
+                    movie_name, self.config.location.city
+                )
+                if results:
+                    movie_code = results[0]["code"]
+                    self._set_movie_code(movie_code)
+
+        if not movie_code:
+            return []
+
+        try:
+            target_dates = self._resolve_target_dates()
+            result = self.scraper.fetch_availability(
+                movie_code=movie_code,
+                city=self.config.location.city,
+                region_code=self.config.location.region_code,
+                target_dates=target_dates,
+            )
+            matching = self._filter_showtimes(result.showtimes)
+            return [
+                s for s in matching
+                if s.status in (AvailabilityStatus.AVAILABLE, AvailabilityStatus.FILLING_FAST)
+            ]
+        except ScraperError as e:
+            logger.warning("list_shows failed: %s", e)
+            return []
+
     def _check_once(self) -> AvailabilityResult | None:
         self._check_count += 1
 
+        movie_name = self._movie_name()
+        movie_code = self._movie_code()
+
         # Auto-resolve movie code if changed via Telegram /movie command
-        if not self.config.movie.code and self.config.movie.name:
+        if not movie_code and movie_name:
             if isinstance(self.scraper, HttpScraper):
-                logger.info("Resolving movie code for '%s'...", self.config.movie.name)
+                logger.info("Resolving movie code for '%s'...", movie_name)
                 results = self.scraper.search_movie(
-                    self.config.movie.name, self.config.location.city
+                    movie_name, self.config.location.city
                 )
                 if results:
-                    self.config.movie.code = results[0]["code"]
-                    logger.info("Resolved to: %s (%s)", results[0]["name"], results[0]["code"])
-                    self.state.reset()  # New movie, reset dedup state
+                    movie_code = results[0]["code"]
+                    self._set_movie_code(movie_code)
+                    logger.info("Resolved to: %s (%s)", results[0]["name"], movie_code)
+                    self.state.reset()
                 else:
-                    logger.warning("Could not resolve movie '%s'", self.config.movie.name)
+                    logger.warning("Could not resolve movie '%s'", movie_name)
                     return None
 
         logger.info(
             "Check #%d — fetching availability for '%s'",
             self._check_count,
-            self.config.movie.name,
+            movie_name,
         )
 
         try:
             target_dates = self._resolve_target_dates()
             result = self.scraper.fetch_availability(
-                movie_code=self.config.movie.code,
+                movie_code=movie_code,
                 city=self.config.location.city,
                 region_code=self.config.location.region_code,
                 target_dates=target_dates,
             )
-            result.movie_name = self.config.movie.name
+            result.movie_name = movie_name
             self.health.record(True)
             self._current_interval = self.config.checker.interval_seconds
             self._degraded_notified = False
@@ -111,7 +210,7 @@ class AvailabilityChecker:
                 new = self.state.filter_new(available)
                 if new:
                     logger.info("Found %d NEW available showtime(s)!", len(new))
-                    self._notify(result.movie_name, new)
+                    # self._notify(result.movie_name, new)
                     self.state.mark_notified(new)
                 else:
                     logger.info(
@@ -166,9 +265,9 @@ class AvailabilityChecker:
         filtered = showtimes
 
         # Filter by preferred cinemas
-        prefs = self.config.location.preferred_cinemas
-        if prefs:
-            prefs_lower = [p.lower() for p in prefs]
+        cinema_prefs = self._pref("preferred_cinemas", self.config.location.preferred_cinemas)
+        if cinema_prefs:
+            prefs_lower = [p.lower() for p in cinema_prefs]
             filtered = [
                 s
                 for s in filtered
@@ -176,7 +275,7 @@ class AvailabilityChecker:
             ]
 
         # Filter by languages
-        langs = self.config.movie.languages
+        langs = self._pref("languages", self.config.movie.languages)
         if langs:
             langs_lower = [l.lower() for l in langs]
             filtered = [
@@ -184,7 +283,7 @@ class AvailabilityChecker:
             ]
 
         # Filter by formats
-        fmts = self.config.movie.formats
+        fmts = self._pref("formats", self.config.movie.formats)
         if fmts:
             fmts_lower = [f.lower() for f in fmts]
             filtered = [

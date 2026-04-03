@@ -15,6 +15,7 @@ venv/
 
 # State
 state.json
+.chat_ids.json
 
 # IDE
 .vscode/

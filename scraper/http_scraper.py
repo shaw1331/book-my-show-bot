@@ -90,6 +90,40 @@ class HttpScraper(BaseScraper):
             if not d.get("isDisabled", False)
         ]
 
+    def discover_dimensions(self, movie_code: str, city: str) -> dict[str, str]:
+        """Discover all dimension variants (IMAX 2D, 4DX, etc.) for a movie.
+
+        BMS uses separate event codes per dimension. This fetches the movie
+        detail page and extracts the dimension -> event code mapping.
+
+        Returns: {"2D": "ET00451760", "IMAX 2D": "ET00481564", ...}
+        """
+        self._warm_up()
+        detail_url = f"https://in.bookmyshow.com/movies/{city}/-/{movie_code}"
+        try:
+            # Try the detail page
+            resp = self._session.get(detail_url, timeout=self.config.request_timeout)
+            if resp.status_code != 200:
+                return {movie_code: movie_code}
+
+            mappings = re.findall(
+                r'\{"dimension":"([^"]+)","eventCode":"(ET\d{8})"',
+                resp.text,
+            )
+            if mappings:
+                result = {dim: code for dim, code in mappings}
+                logger.info("Discovered %d dimension(s): %s", len(result), list(result.keys()))
+                return result
+        except Exception as e:
+            logger.warning("Failed to discover dimensions: %s", e)
+
+        return {"2D": movie_code}
+
+    @staticmethod
+    def _slugify(code: str) -> str:
+        """Placeholder slug — BMS redirects to the correct URL anyway."""
+        return "-"
+
     def fetch_availability(
         self,
         movie_code: str,
@@ -100,12 +134,16 @@ class HttpScraper(BaseScraper):
         self._city = city
         self._warm_up()
 
+        # Discover all dimension variants (IMAX, 4DX, etc.)
+        dimensions = self.discover_dimensions(movie_code, city)
+        all_codes = list(dimensions.values())
+        logger.info("Checking %d event code(s): %s", len(all_codes), list(dimensions.keys()))
+
         if not target_dates:
-            # Fetch today first to discover all available dates
             today = datetime.now().strftime("%Y%m%d")
             target_dates = [today]
             try:
-                initial = self._fetch_showtimes(movie_code, region_code, today)
+                initial = self._fetch_showtimes(all_codes[0], region_code, today)
                 available = self._get_available_dates(initial)
                 if available:
                     target_dates = [d["DateCode"] for d in available]
@@ -113,13 +151,14 @@ class HttpScraper(BaseScraper):
                 pass
 
         all_showtimes: list[Showtime] = []
-        for date_code in target_dates:
-            try:
-                data = self._fetch_showtimes(movie_code, region_code, date_code)
-                showtimes = self._parse_showtimes(data, movie_code, city)
-                all_showtimes.extend(showtimes)
-            except ScraperError as e:
-                logger.warning("Failed to fetch date %s: %s", date_code, e)
+        for code in all_codes:
+            for date_code in target_dates:
+                try:
+                    data = self._fetch_showtimes(code, region_code, date_code)
+                    showtimes = self._parse_showtimes(data, code, city)
+                    all_showtimes.extend(showtimes)
+                except ScraperError as e:
+                    logger.warning("Failed to fetch %s date %s: %s", code, date_code, e)
 
         return AvailabilityResult(
             movie_name="",
@@ -245,7 +284,11 @@ class HttpScraper(BaseScraper):
                     language = ce.get("EventLang", "")
                     dimension = ce.get("EventDimension", "")
                     attributes = st.get("Attributes", "")
-                    fmt = " ".join(filter(None, [dimension, attributes])).strip()
+                    # Avoid duplication like "IMAX 2D IMAX"
+                    if attributes and attributes.lower() in dimension.lower():
+                        fmt = dimension
+                    else:
+                        fmt = " ".join(filter(None, [dimension, attributes])).strip()
 
                     booking_url = (
                         f"https://in.bookmyshow.com/buytickets/"

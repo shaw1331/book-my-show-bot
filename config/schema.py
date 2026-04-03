@@ -58,6 +58,7 @@ class NotificationChannelConfig(BaseModel):
     # telegram
     bot_token_env: str = ""
     chat_id_env: str = ""
+    auth_password_env: str = ""
     # email
     smtp_server: str = ""
     smtp_port: int = 587

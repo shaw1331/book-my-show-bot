@@ -4,6 +4,7 @@ import logging
 
 import requests
 
+from bot.chat_store import ChatStore
 from notifier.base import BaseNotifier
 
 logger = logging.getLogger(__name__)
@@ -12,16 +13,13 @@ _TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 
 
 class TelegramNotifier(BaseNotifier):
-    """Telegram Bot API notifications — free, reliable, personal."""
+    """Telegram Bot API notifications — sends to all active chats."""
 
-    def __init__(self, bot_token: str, chat_id: str):
-        if not bot_token or not chat_id:
-            raise ValueError(
-                "Telegram bot_token and chat_id are required. "
-                "Set the environment variables referenced in config.yaml."
-            )
+    def __init__(self, bot_token: str, chat_store: ChatStore):
+        if not bot_token:
+            raise ValueError("Telegram bot_token is required.")
         self.bot_token = bot_token
-        self.chat_id = chat_id
+        self.chat_store = chat_store
         self._url = _TELEGRAM_API.format(token=bot_token)
 
     @property
@@ -35,33 +33,40 @@ class TelegramNotifier(BaseNotifier):
         url: str = "",
         priority: str = "",
     ) -> bool:
-        # Format as HTML for nice rendering in Telegram
+        chat_ids = self.chat_store.get_all()
+        if not chat_ids:
+            logger.warning("No active Telegram chats — skipping notification")
+            return False
+
         text = f"<b>{_escape_html(title)}</b>\n\n{_escape_html(message)}"
         if url:
             text += f'\n\n<a href="{_escape_html(url)}">Book Now</a>'
 
-        payload = {
-            "chat_id": self.chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        }
+        all_ok = True
+        for chat_id in chat_ids:
+            payload = {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            }
+            try:
+                resp = requests.post(self._url, json=payload, timeout=10)
+                data = resp.json()
+                if data.get("ok"):
+                    logger.info("Notification sent to chat %s", chat_id)
+                else:
+                    logger.warning(
+                        "Telegram API error for chat %s: %s",
+                        chat_id,
+                        data.get("description", ""),
+                    )
+                    all_ok = False
+            except requests.RequestException as e:
+                logger.error("Failed to send to chat %s: %s", chat_id, e)
+                all_ok = False
 
-        try:
-            resp = requests.post(self._url, json=payload, timeout=10)
-            data = resp.json()
-
-            if data.get("ok"):
-                logger.info("Notification sent via Telegram")
-                return True
-
-            logger.warning(
-                "Telegram API error: %s", data.get("description", resp.text[:200])
-            )
-            return False
-        except requests.RequestException as e:
-            logger.error("Failed to send Telegram notification: %s", e)
-            return False
+        return all_ok
 
     def test(self) -> bool:
         return self.send(

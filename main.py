@@ -17,6 +17,8 @@ import logging
 import logging.handlers
 import sys
 
+from bot.chat_store import ChatStore
+from bot.preference_store import PreferenceStore
 from bot.telegram_commands import TelegramCommandBot
 from checker.engine import AvailabilityChecker
 from config.loader import load_config
@@ -36,7 +38,10 @@ def create_scraper(config: ScraperConfig, city: str = "") -> BaseScraper:
     raise ValueError(f"Unknown scraper strategy: {config.strategy!r}")
 
 
-def create_notifiers(channels: list[NotificationChannelConfig]) -> list[BaseNotifier]:
+def create_notifiers(
+    channels: list[NotificationChannelConfig],
+    chat_store: ChatStore | None = None,
+) -> list[BaseNotifier]:
     """Factory: create notifiers for all enabled channels."""
     notifiers: list[BaseNotifier] = []
     for ch in channels:
@@ -47,8 +52,11 @@ def create_notifiers(channels: list[NotificationChannelConfig]) -> list[BaseNoti
                 NtfyNotifier(topic=ch.topic, server=ch.server, priority=ch.priority)
             )
         elif ch.type == "telegram":
+            if not chat_store:
+                logging.warning("Telegram notifier requires ChatStore — skipping")
+                continue
             notifiers.append(
-                TelegramNotifier(bot_token=ch.bot_token_env, chat_id=ch.chat_id_env)
+                TelegramNotifier(bot_token=ch.bot_token_env, chat_store=chat_store)
             )
         else:
             logging.warning("Unknown notification channel type: %s", ch.type)
@@ -162,7 +170,21 @@ def main() -> None:
         else:
             logger.error("Config error: movie.code or movie.name is required")
             sys.exit(1)
-    notifiers = create_notifiers(config.notifications.channels)
+    # Create persistent stores
+    chat_store = ChatStore()
+    prefs = PreferenceStore()
+    prefs.seed_from_config(config)
+    telegram_config = None
+    for ch in config.notifications.channels:
+        if ch.type == "telegram" and ch.enabled and ch.bot_token_env:
+            telegram_config = ch
+            # Seed existing chat_id so current users don't need to re-auth
+            if ch.chat_id_env and not chat_store.is_active(ch.chat_id_env):
+                chat_store.add(ch.chat_id_env)
+                logger.info("Seeded chat %s from config", ch.chat_id_env)
+            break
+
+    notifiers = create_notifiers(config.notifications.channels, chat_store=chat_store)
 
     if not notifiers:
         logger.warning(
@@ -184,7 +206,7 @@ def main() -> None:
         return
 
     # Create checker
-    checker = AvailabilityChecker(config, scraper, notifiers)
+    checker = AvailabilityChecker(config, scraper, notifiers, prefs=prefs)
 
     if args.check_once:
         result = checker.check_once()
@@ -199,19 +221,24 @@ def main() -> None:
 
     # Start Telegram command bot if telegram is configured
     cmd_bot = None
-    for ch in config.notifications.channels:
-        if ch.type == "telegram" and ch.enabled and ch.bot_token_env:
-            cmd_bot = TelegramCommandBot(
-                bot_token=ch.bot_token_env,
-                chat_id=ch.chat_id_env,
-                config=config,
-                on_check_now=checker.check_once,
-            )
-            cmd_bot.start()
-            logger.info(
-                "Telegram command bot active — send /help to your bot for commands"
-            )
-            break
+    if telegram_config:
+        auth_password = telegram_config.auth_password_env
+        if not auth_password:
+            logger.warning("No BOT_AUTH_PASSWORD set — users cannot /start")
+        cmd_bot = TelegramCommandBot(
+            bot_token=telegram_config.bot_token_env,
+            chat_store=chat_store,
+            auth_password=auth_password,
+            config=config,
+            prefs=prefs,
+            on_check_now=checker.check_once,
+            on_list_shows=checker.list_shows,
+            on_fetch_raw=checker.fetch_raw_shows,
+        )
+        cmd_bot.start()
+        logger.info(
+            "Telegram command bot active — send /start <password> to connect"
+        )
 
     try:
         checker.run()

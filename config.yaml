@@ -47,16 +47,15 @@ notifications:
       server: "https://ntfy.sh"
       priority: "high"
 
-    # Uncomment to enable Telegram notifications
+    # Telegram notifications
     # 1. Create a bot via @BotFather on Telegram → get your bot token
-    # 2. Start a chat with your bot, then visit:
-    #    https://api.telegram.org/bot<TOKEN>/getUpdates
-    #    to find your chat_id
-    # 3. Set env vars, or paste values directly below
+    # 2. Users send /start <password> to the bot to connect
+    # 3. Set env vars in .env file
     - type: "telegram"
       enabled: true
       bot_token_env: "TELEGRAM_BOT_TOKEN"      # Reads from .env file
-      chat_id_env: "TELEGRAM_CHAT_ID"          # Reads from .env file
+      chat_id_env: "TELEGRAM_CHAT_ID"          # Seed chat ID (optional, for backward compat)
+      auth_password_env: "BOT_AUTH_PASSWORD"    # Password for /start auth
 
 logging:
   level: "INFO"                              # DEBUG for verbose output
