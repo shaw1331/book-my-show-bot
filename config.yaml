@@ -1,0 +1,63 @@
+# BookMyShow Availability Checker — Configuration
+# ================================================
+# Edit this file with your preferences before running the bot.
+
+movie:
+  name: "Project Hail Mary"                    # Movie name (for display in notifications)
+  code: ""                                   # BMS event code (auto-resolved from name if empty)
+  url: ""                                    # Or paste the full BMS movie URL here
+  languages: ["English"]                     # Filter: ["Hindi", "Telugu"] — empty = all
+  formats: ["IMAX"]                          # Filter: ["2D", "IMAX"] — fuzzy match, empty = all
+
+location:
+  city: "bengaluru"                          # BMS city slug (lowercase, from URL)
+  region_code: "BANG"                        # BMS region code
+  preferred_cinemas: []                      # Only alert for these cinemas — empty = all
+    # - "PVR: Next Galleria Mall"
+    # - "INOX: GVK One"
+  nearby_cinemas: true
+  lat: 12.969785                              # Your latitude (for distance sorting)
+  lng: 77.733818                             # Your longitude
+  max_distance_km: 0                         # 0 = no limit, e.g. 15 = only within 15km
+
+dates:
+  target_dates: []                           # Specific dates: ["2026-04-10", "2026-04-11"]
+  target_days: []                            # Day filter: ["Saturday", "Sunday"]
+  any_date: true                             # true = ignore date filters, check all dates
+
+scraper:
+  strategy: "http"                           # "http" | "playwright" | "auto"
+  request_timeout: 15
+  max_retries: 3
+
+checker:
+  interval_seconds: 300                      # How often to check (seconds)
+  backoff_multiplier: 2.0                    # On error, multiply interval by this
+  max_interval_seconds: 900                  # Max backoff cap (15 min)
+  health_check_interval: 10                  # Run health check every N cycles
+  quiet_hours:                               # Skip checks during these hours
+    start: "01:00"
+    end: "06:00"
+
+notifications:
+  channels:
+    - type: "ntfy"
+      enabled: true
+      topic: "bms-movie-alert"               # Subscribe to this topic in the ntfy app
+      server: "https://ntfy.sh"
+      priority: "high"
+
+    # Uncomment to enable Telegram notifications
+    # 1. Create a bot via @BotFather on Telegram → get your bot token
+    # 2. Start a chat with your bot, then visit:
+    #    https://api.telegram.org/bot<TOKEN>/getUpdates
+    #    to find your chat_id
+    # 3. Set env vars, or paste values directly below
+    - type: "telegram"
+      enabled: true
+      bot_token_env: "TELEGRAM_BOT_TOKEN"      # Reads from .env file
+      chat_id_env: "TELEGRAM_CHAT_ID"          # Reads from .env file
+
+logging:
+  level: "INFO"                              # DEBUG for verbose output
+  file: ""                                   # Set a path to also log to file
