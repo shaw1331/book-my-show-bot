@@ -24,12 +24,13 @@ dates:
   target_dates: []                           # Specific dates: ["2026-04-10", "2026-04-11"]
   target_days: []                            # Day filter: ["Saturday", "Sunday"]
   any_date: true                             # true = ignore date filters, check all dates
-  max_days: 1                                # Max days to check (0 = all available from BMS)
+  max_days: 5                                # Max days to check (0 = all available from BMS)
 
 scraper:
   strategy: "http"                           # "http" | "playwright" | "auto"
   request_timeout: 15
   max_retries: 3
+  api_call_delay: 1.5                        # Seconds between BMS API calls (+ jitter). Increase if getting 429s.
 
 checker:
   interval_seconds: 300                      # How often to check (seconds)

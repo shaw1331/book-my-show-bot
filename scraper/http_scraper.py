@@ -54,11 +54,23 @@ class HttpScraper(BaseScraper):
         self._warmed_up = False
         # Cache: movie_code -> {dimension: event_code}
         self._dimensions_cache: dict[str, dict[str, str]] = {}
+        self._last_api_call: float = 0.0
 
     def _build_session(self) -> cffi_requests.Session:
         target = random.choice(_IMPERSONATE_TARGETS)
         session = cffi_requests.Session(impersonate=target)
         return session
+
+    def _throttle(self) -> None:
+        """Enforce configurable minimum delay between BMS API calls."""
+        if self._last_api_call > 0:
+            elapsed = time.time() - self._last_api_call
+            remaining = self.config.api_call_delay - elapsed
+            if remaining > 0:
+                wait = remaining + random.uniform(0, 0.5)
+                logger.debug("Throttling %.2fs before next API call", wait)
+                time.sleep(wait)
+        self._last_api_call = time.time()
 
     def _warm_up(self) -> None:
         """Visit the BMS website once to acquire Cloudflare cookies."""
@@ -68,6 +80,7 @@ class HttpScraper(BaseScraper):
         url = _MOVIES_PAGE.format(city=city)
         try:
             logger.info("Warming up session (visiting %s)...", url)
+            self._throttle()
             resp = self._session.get(url, timeout=self.config.request_timeout)
             if resp.status_code == 200:
                 self._warmed_up = True
@@ -107,6 +120,7 @@ class HttpScraper(BaseScraper):
         self._warm_up()
         detail_url = f"https://in.bookmyshow.com/movies/{city}/-/{movie_code}"
         try:
+            self._throttle()
             resp = self._session.get(detail_url, timeout=self.config.request_timeout)
             if resp.status_code != 200:
                 return {"2D": movie_code}
@@ -180,14 +194,12 @@ class HttpScraper(BaseScraper):
             target_dates = target_dates[:max_days]
             logger.info("Limited to %d day(s)", max_days)
 
+        # Check farthest date first (BMS returns nearest-first)
+        target_dates = list(reversed(target_dates))
+
         all_showtimes: list[Showtime] = []
-        call_count = 0
         for code in all_codes:
             for date_code in target_dates:
-                # Throttle: small delay between calls to avoid 429 rate limits
-                if call_count > 0:
-                    time.sleep(1.0 + random.uniform(0, 0.5))
-                call_count += 1
                 try:
                     data = self._fetch_showtimes(code, region_code, date_code)
                     showtimes = self._parse_showtimes(data, code, city)
@@ -224,6 +236,7 @@ class HttpScraper(BaseScraper):
         last_error: Exception | None = None
         for attempt in range(1, self.config.max_retries + 1):
             try:
+                self._throttle()
                 resp = self._session.get(
                     _SHOWTIMES_API,
                     params=params,
@@ -351,6 +364,7 @@ class HttpScraper(BaseScraper):
         """Fetch the movies listing page and verify we can extract data."""
         try:
             url = _MOVIES_PAGE.format(city=city)
+            self._throttle()
             resp = self._session.get(url, timeout=self.config.request_timeout)
             resp.raise_for_status()
 
@@ -392,6 +406,7 @@ class HttpScraper(BaseScraper):
         url = _MOVIES_PAGE.format(city=city)
 
         try:
+            self._throttle()
             resp = self._session.get(url, timeout=self.config.request_timeout)
             resp.raise_for_status()
         except Exception as e:

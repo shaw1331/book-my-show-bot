@@ -39,6 +39,7 @@ class ScraperConfig(BaseModel):
     user_agent: str = ""
     max_retries: int = 3
     headers: dict[str, str] = {}
+    api_call_delay: float = 1.5  # base seconds between BMS API calls
 
 
 class CheckerConfig(BaseModel):
