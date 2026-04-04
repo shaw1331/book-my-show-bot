@@ -51,6 +51,14 @@ class AvailabilityChecker:
     def _movie_code(self) -> str:
         return self._pref("movie_code", self.config.movie.code)
 
+    def _max_days(self) -> int:
+        return self.config.dates.max_days
+
+    def _format_filter(self) -> list[str] | None:
+        """Get format filter from prefs, or None if empty (fetch all)."""
+        fmts = self._pref("formats", self.config.movie.formats)
+        return fmts if fmts else None
+
     def _set_movie_code(self, code: str) -> None:
         if self.prefs:
             self.prefs.set("movie_code", code)
@@ -110,6 +118,7 @@ class AvailabilityChecker:
                 city=self.config.location.city,
                 region_code=self.config.location.region_code,
                 target_dates=target_dates,
+                max_days=self._max_days(),
             )
             return [
                 s for s in result.showtimes
@@ -118,6 +127,19 @@ class AvailabilityChecker:
         except ScraperError as e:
             logger.warning("fetch_raw_shows failed: %s", e)
             return []
+
+    def get_formats_by_cinema(self) -> dict[str, list[str]]:
+        """Get all available formats grouped by cinema (no filters).
+
+        Used by /whatson command.
+        """
+        from collections import defaultdict
+
+        shows = self.fetch_raw_shows()
+        by_cinema: dict[str, set[str]] = defaultdict(set)
+        for s in shows:
+            by_cinema[s.cinema.name].add(s.format)
+        return {cinema: sorted(fmts) for cinema, fmts in sorted(by_cinema.items())}
 
     def list_shows(self) -> list[Showtime]:
         """Fetch all matching available shows (no dedup, no notifications).
@@ -146,6 +168,8 @@ class AvailabilityChecker:
                 city=self.config.location.city,
                 region_code=self.config.location.region_code,
                 target_dates=target_dates,
+                format_filter=self._format_filter(),
+                max_days=self._max_days(),
             )
             matching = self._filter_showtimes(result.showtimes)
             return [
@@ -191,6 +215,8 @@ class AvailabilityChecker:
                 city=self.config.location.city,
                 region_code=self.config.location.region_code,
                 target_dates=target_dates,
+                format_filter=self._format_filter(),
+                max_days=self._max_days(),
             )
             result.movie_name = movie_name
             self.health.record(True)
@@ -210,7 +236,7 @@ class AvailabilityChecker:
                 new = self.state.filter_new(available)
                 if new:
                     logger.info("Found %d NEW available showtime(s)!", len(new))
-                    # self._notify(result.movie_name, new)
+                    self._notify(result.movie_name, new)
                     self.state.mark_notified(new)
                 else:
                     logger.info(

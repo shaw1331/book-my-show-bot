@@ -52,6 +52,8 @@ class HttpScraper(BaseScraper):
         self._city = city
         self._session = self._build_session()
         self._warmed_up = False
+        # Cache: movie_code -> {dimension: event_code}
+        self._dimensions_cache: dict[str, dict[str, str]] = {}
 
     def _build_session(self) -> cffi_requests.Session:
         target = random.choice(_IMPERSONATE_TARGETS)
@@ -95,16 +97,19 @@ class HttpScraper(BaseScraper):
 
         BMS uses separate event codes per dimension. This fetches the movie
         detail page and extracts the dimension -> event code mapping.
+        Results are cached per movie_code.
 
         Returns: {"2D": "ET00451760", "IMAX 2D": "ET00481564", ...}
         """
+        if movie_code in self._dimensions_cache:
+            return self._dimensions_cache[movie_code]
+
         self._warm_up()
         detail_url = f"https://in.bookmyshow.com/movies/{city}/-/{movie_code}"
         try:
-            # Try the detail page
             resp = self._session.get(detail_url, timeout=self.config.request_timeout)
             if resp.status_code != 200:
-                return {movie_code: movie_code}
+                return {"2D": movie_code}
 
             mappings = re.findall(
                 r'\{"dimension":"([^"]+)","eventCode":"(ET\d{8})"',
@@ -112,6 +117,7 @@ class HttpScraper(BaseScraper):
             )
             if mappings:
                 result = {dim: code for dim, code in mappings}
+                self._dimensions_cache[movie_code] = result
                 logger.info("Discovered %d dimension(s): %s", len(result), list(result.keys()))
                 return result
         except Exception as e:
@@ -130,12 +136,31 @@ class HttpScraper(BaseScraper):
         city: str,
         region_code: str,
         target_dates: list[str] | None = None,
+        format_filter: list[str] | None = None,
+        max_days: int = 0,
     ) -> AvailabilityResult:
         self._city = city
         self._warm_up()
 
         # Discover all dimension variants (IMAX, 4DX, etc.)
         dimensions = self.discover_dimensions(movie_code, city)
+
+        # Filter dimensions by user's format preferences
+        if format_filter:
+            filter_lower = [f.lower() for f in format_filter]
+            filtered = {
+                dim: code
+                for dim, code in dimensions.items()
+                if any(f in dim.lower() for f in filter_lower)
+            }
+            if filtered:
+                dimensions = filtered
+            else:
+                logger.warning(
+                    "No dimensions match format filter %s — fetching all",
+                    format_filter,
+                )
+
         all_codes = list(dimensions.values())
         logger.info("Checking %d event code(s): %s", len(all_codes), list(dimensions.keys()))
 
@@ -150,9 +175,19 @@ class HttpScraper(BaseScraper):
             except ScraperError:
                 pass
 
+        # Limit number of dates if max_days is set
+        if max_days > 0 and len(target_dates) > max_days:
+            target_dates = target_dates[:max_days]
+            logger.info("Limited to %d day(s)", max_days)
+
         all_showtimes: list[Showtime] = []
+        call_count = 0
         for code in all_codes:
             for date_code in target_dates:
+                # Throttle: small delay between calls to avoid 429 rate limits
+                if call_count > 0:
+                    time.sleep(1.0 + random.uniform(0, 0.5))
+                call_count += 1
                 try:
                     data = self._fetch_showtimes(code, region_code, date_code)
                     showtimes = self._parse_showtimes(data, code, city)

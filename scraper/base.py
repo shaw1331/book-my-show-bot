@@ -23,6 +23,8 @@ class BaseScraper(ABC):
         city: str,
         region_code: str,
         target_dates: list[str] | None = None,
+        format_filter: list[str] | None = None,
+        max_days: int = 0,
     ) -> AvailabilityResult:
         """Fetch current availability for a movie.
 

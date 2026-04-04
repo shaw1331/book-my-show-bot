@@ -55,6 +55,7 @@ class TelegramCommandBot:
         on_check_now: callable = None,
         on_list_shows: callable = None,
         on_fetch_raw: callable = None,
+        on_whatson: callable = None,
     ):
         self.bot_token = bot_token
         self.chat_store = chat_store
@@ -65,6 +66,7 @@ class TelegramCommandBot:
         self._on_check_now = on_check_now
         self._on_list_shows = on_list_shows
         self._on_fetch_raw = on_fetch_raw
+        self._on_whatson = on_whatson
         self._offset = 0
         self._running = False
         self._thread: threading.Thread | None = None
@@ -184,6 +186,7 @@ class TelegramCommandBot:
             "list": lambda: self._cmd_list(chat_id),
             "shows": lambda: self._cmd_list(chat_id),
             "lookup": lambda: self._cmd_lookup(chat_id, arg),
+            "whatson": lambda: self._cmd_whatson(chat_id),
         }
 
         handler = handlers.get(cmd)
@@ -250,6 +253,7 @@ class TelegramCommandBot:
             "/addlang LANG — Add language\n"
             "/removelang N — Remove by number\n\n"
             "<b>Actions:</b>\n"
+            "/whatson — Formats available by cinema\n"
             "/lookup CINEMA — All shows at a cinema (no filters)\n"
             "/list — Show all matching shows now\n"
             "/check — Trigger immediate check\n"
@@ -492,6 +496,30 @@ class TelegramCommandBot:
 
         self._send_grouped_shows(chat_id, movie_name, matched, subtitle=f"at <b>{cinema_query}</b>")
 
+    # What's on: formats grouped by cinema (no filters)
+    def _cmd_whatson(self, chat_id: str) -> None:
+        if not self._on_whatson:
+            self._send(chat_id, "Not available in this mode.")
+            return
+
+        self._send(chat_id, "⏳ Fetching available formats...")
+        formats_by_cinema = self._on_whatson()
+
+        if not formats_by_cinema:
+            movie_name = self.prefs.get("movie_name") or self.config.movie.name
+            self._send(chat_id, f"No shows found for <b>{movie_name}</b>.")
+            return
+
+        movie_name = self.prefs.get("movie_name") or self.config.movie.name
+        lines = [f"🎬 <b>{movie_name}</b> — Formats by Cinema\n"]
+
+        for cinema_name, formats in formats_by_cinema.items():
+            lines.append(f"🏢 <b>{cinema_name}</b>")
+            lines.append(f"  📽 {', '.join(formats)}")
+            lines.append("")
+
+        self._send(chat_id, "\n".join(lines))
+
     # --- Helpers ---
 
     def _send_grouped_shows(
@@ -544,7 +572,7 @@ class TelegramCommandBot:
     def _all_commands(self) -> set[str]:
         """All known command names (without /)."""
         return {
-            "help", "status", "close", "start", "check", "list", "shows", "lookup",
+            "help", "status", "close", "start", "check", "list", "shows", "lookup", "whatson",
             "cinemas", "addcinema", "removecinema", "clearcinemas",
             "formats", "addformat", "removeformat", "clearformats",
             "languages", "addlang", "removelang",

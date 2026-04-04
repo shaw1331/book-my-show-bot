@@ -24,6 +24,7 @@ dates:
   target_dates: []                           # Specific dates: ["2026-04-10", "2026-04-11"]
   target_days: []                            # Day filter: ["Saturday", "Sunday"]
   any_date: true                             # true = ignore date filters, check all dates
+  max_days: 1                                # Max days to check (0 = all available from BMS)
 
 scraper:
   strategy: "http"                           # "http" | "playwright" | "auto"

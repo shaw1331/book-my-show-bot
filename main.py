@@ -234,6 +234,7 @@ def main() -> None:
             on_check_now=checker.check_once,
             on_list_shows=checker.list_shows,
             on_fetch_raw=checker.fetch_raw_shows,
+            on_whatson=checker.get_formats_by_cinema,
         )
         cmd_bot.start()
         logger.info(

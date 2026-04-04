@@ -30,6 +30,7 @@ class DatesConfig(BaseModel):
     target_dates: list[str] = []
     target_days: list[str] = []
     any_date: bool = True
+    max_days: int = 0  # 0 = all available dates from BMS
 
 
 class ScraperConfig(BaseModel):
